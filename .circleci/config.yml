@@ -1,0 +1,127 @@
+# lets define default values for jobs and give it a name 'workdirAndImage'
+defaults: &workdirAndImage
+  working_directory: ~/workspace
+  docker:
+    - image: circleci/openjdk:8-jdk
+
+orbs:
+  codecov: codecov/codecov@1.0.3
+
+version: 2.1
+
+# 1) jobs defined here are going to be used in workflows (pipeline). You can treat jobs as steps in workflow/pipeline
+# 2) jobs in workflow are run in SEPARATE docker containers, so techniques like caching or storing to workspace is a common thing
+# 3) jobs don't have to be run within a workflow, they can be run separately, see CircleCI documentation for that
+jobs:
+
+  checkout_code:
+    #apply defaults defined at the top of the config (working dir + docker image)
+    <<: *workdirAndImage
+
+    #here we are defining steps for given job/step
+    steps:
+      # checkout is a built-in step which simply pulls git repository. path parameter is optional
+      - checkout:
+          path: ~/workspace/repo
+
+      # we checked out the code in the previous stepw, lets store it to the workspace
+      - persist_to_workspace:
+          root: ~/workspace
+          paths:
+            - repo/
+
+  build_only:
+    # restore defaults named 'workdirAndImage'
+    <<: *workdirAndImage
+    # override working directory (its defined as ~/workspace in 'workdirAndImage'), we want work on checked out code
+    working_directory: ~/workspace/repo
+
+    steps:
+      # restore workspace - in checkout_code step we persisted checked out code under ~/workspace/repo
+      - attach_workspace:
+          at: ~/workspace
+      # restore cache (saving it is at the end of this job), it contains downloaded dependencies + build artifacts.
+      - restore_cache:
+          keys:
+            # this key relates to build.gradle. If this file has not been changed since the last build, cache will be used
+            # {{ checksum "build.gradle" }} simply tells Circle CI to calculate checksum from build.gradle
+            - v2-dependencies-{{ checksum "build.gradle.kts" }}
+            # fallback to using the latest cache if no exact match is found
+            - v2-dependencies-
+
+      - run: ./gradlew build
+      - run: ./gradlew check
+      - codecov/upload:
+          file: build/reports/jacoco/report.xml
+      - store_artifacts:
+          path: build/libs
+
+      # after performing build lets store dependencies and build artifacts
+      - save_cache:
+          paths:
+            - ~/.gradle
+            - ~/.m2
+          key: v2-dependencies-{{ checksum "build.gradle.kts" }}
+
+  build_and_publish:
+    # restore defaults named 'workdirAndImage'
+    <<: *workdirAndImage
+    # override working directory (its defined as ~/workspace in 'workdirAndImage'), we want work on checked out code
+    working_directory: ~/workspace/repo
+
+    steps:
+      # restore workspace - in checkout_code step we persisted checked out code under ~/workspace/repo
+      - attach_workspace:
+          at: ~/workspace
+      # restore cache (saving it is at the end of this job), it contains downloaded dependencies + build artifacts.
+      - restore_cache:
+          keys:
+            # this key relates to build.gradle. If this file has not been changed since the last build, cache will be used
+            # {{ checksum "build.gradle" }} simply tells Circle CI to calculate checksum from build.gradle
+            - v2-dependencies-{{ checksum "build.gradle.kts" }}
+            # fallback to using the latest cache if no exact match is found
+            - v2-dependencies-
+
+      - run: ./gradlew build
+      - run: ./gradlew check
+      - run: ./gradlew publish
+
+      - codecov/upload:
+          file: build/reports/jacoco/report.xml
+      - store_artifacts:
+          path: build/libs
+
+      # after performing build lets store dependencies and build artifacts
+      - save_cache:
+          paths:
+            - ~/.gradle
+            - ~/.m2
+          key: v2-dependencies-{{ checksum "build.gradle.kts" }}
+
+# lets define workflow
+workflows:
+  version: 2.1
+
+  # workflow name
+  build_test_and_deploy:
+
+    jobs:
+      - checkout_code
+
+      - build_only:
+          filters:
+            branches:
+              ignore:
+                - master
+                - dev
+          requires:
+            - checkout_code
+
+      - build_and_publish:
+          filters:
+            branches:
+              only:
+                - master
+                - dev
+          requires:
+            - checkout_code
